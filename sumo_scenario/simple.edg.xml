@@ -1,0 +1,11 @@
+<edges>
+    <edge id="e1" from="n1" to="J1" priority="2"/>
+    <edge id="e2" from="n2" to="J1" priority="2"/>
+    <edge id="e3" from="n3" to="J1" priority="2"/>
+    <edge id="e4" from="n4" to="J1" priority="2"/>
+
+    <edge id="e1r" from="J1" to="n3" priority="2"/>
+    <edge id="e2r" from="J1" to="n4" priority="2"/>
+    <edge id="e3r" from="J1" to="n1" priority="2"/>
+    <edge id="e4r" from="J1" to="n2" priority="2"/>
+</edges>

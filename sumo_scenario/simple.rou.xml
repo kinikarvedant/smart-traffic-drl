@@ -1,0 +1,9 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<routes>
+  <vType id="car" accel="2.6" decel="4.5" sigma="0.5" length="5" maxSpeed="13.9"/>
+  <!-- flows from each approach to opposite outgoing edge -->
+  <flow id="flowN" from="e1" to="e1r" begin="0" end="3600" vehsPerHour="200"/>
+  <flow id="flowE" from="e2" to="e2r" begin="0" end="3600" vehsPerHour="200"/>
+  <flow id="flowS" from="e3" to="e3r" begin="0" end="3600" vehsPerHour="200"/>
+  <flow id="flowW" from="e4" to="e4r" begin="0" end="3600" vehsPerHour="200"/>
+</routes>

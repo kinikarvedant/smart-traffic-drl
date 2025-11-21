@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+venv/
+.env/
+
+# Logs
+*.log
+
+# TensorBoard
+results/ppo_logs/*
+
+# SUMO junk
+*.dump
+*.output
+
+# Models
+*.zip
+
+# Windows
+Thumbs.db
+desktop.ini
+"@ -Encoding UTF8

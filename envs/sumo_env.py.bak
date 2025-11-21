@@ -1,0 +1,232 @@
+﻿# envs/sumo_env.py
+import os
+import sys
+import shutil
+import random
+import time
+import numpy as np
+
+# Use Gymnasium (we replaced import earlier)
+import gymnasium as gym
+
+# try to add SUMO tools to path if SUMO_HOME set
+if "SUMO_HOME" in os.environ:
+    tools = os.path.join(os.environ["SUMO_HOME"], "tools")
+    if tools not in sys.path:
+        sys.path.append(tools)
+else:
+    # fallback typical Windows install path
+    possible = r"C:\Program Files (x86)\Eclipse\Sumo"
+    if os.path.isdir(possible):
+        tools = os.path.join(possible, "tools")
+        if tools not in sys.path:
+            sys.path.append(tools)
+
+import traci
+
+class SumoTrafficEnv(gym.Env):
+    """SUMO Traffic environment (Gymnasium API compatible).
+    Accepts reset(seed=...) and will pass seed to SUMO (--seed) for reproducibility.
+    """
+
+    metadata = {"render_modes": ["human"]}
+
+    def __init__(self, sumo_cfg, gui=False, sim_step=1, action_repeat=5):
+        super().__init__()
+        self.sumo_cfg = os.path.abspath(sumo_cfg)
+        self.gui = gui
+        self.sim_step = sim_step
+        self.action_repeat = action_repeat
+        # default binary names
+        self.sumo_binary = "sumo-gui" if gui else "sumo"
+        self.tls_id = None
+        self.lanes = []
+        self._phase_elapsed = 0
+        self._current_phase = 0
+        self._last_seed = None
+
+        # placeholders - will be set in reset()
+        self.observation_space = gym.spaces.Box(low=0, high=1e9, shape=(10,), dtype=np.float32)
+        self.action_space = gym.spaces.Discrete(2)
+
+    def _find_sumo_executable(self):
+        """Return executable path (prefer full path if not on PATH)."""
+        if shutil.which(self.sumo_binary):
+            return self.sumo_binary
+        candidates = [
+            r"C:\Program Files (x86)\Eclipse\Sumo\bin\sumo.exe",
+            r"C:\Program Files (x86)\Eclipse\Sumo\bin\sumo-gui.exe",
+            r"C:\Program Files\Sumo\bin\sumo.exe",
+            r"C:\Program Files\Sumo\bin\sumo-gui.exe",
+        ]
+        for c in candidates:
+            if os.path.exists(c):
+                return c
+        return self.sumo_binary
+
+    def _build_cmd(self, seed=None):
+        exe = self._find_sumo_executable()
+        cmd = [exe, "-c", self.sumo_cfg, "--step-length", str(self.sim_step), "--no-warnings", "true"]
+        if seed is not None:
+            # SUMO expects --seed <int>
+            cmd += ["--seed", str(int(seed))]
+        return cmd
+
+    def _start_sumo(self, seed=None):
+        cmd = self._build_cmd(seed=seed)
+        # print for debug so user sees the command
+        print("Starting SUMO with command:", " ".join(cmd))
+        traci.start(cmd)
+
+    def reset(self, *, seed=None, options=None):
+        """
+        Reset environment.
+        Accepts seed (Gymnasium style). If provided, will start SUMO with --seed so the simulation RNG is reproducible.
+        Returns observation (SB3 expects obs only).
+        """
+        # seed python RNGs for deterministic behaviour outside SUMO
+        if seed is not None:
+            # seed can be tuple in Gymnasium; handle int or tuple
+            if isinstance(seed, (list, tuple)):
+                seed = int(seed[0])
+            random.seed(int(seed))
+            np.random.seed(int(seed))
+            self._last_seed = int(seed)
+        else:
+            self._last_seed = None
+
+        # close any previous traci connection
+        try:
+            traci.close()
+        except Exception:
+            pass
+
+        # start SUMO with optional seed
+        self._start_sumo(seed=self._last_seed)
+
+        # warmup a few steps to populate SUMO state
+        for _ in range(5):
+            traci.simulationStep()
+
+        # detect TLS & lanes
+        tls = traci.trafficlight.getIDList()
+        self.tls_id = tls[0] if tls else None
+
+        if self.tls_id:
+            controlled = traci.trafficlight.getControlledLinks(self.tls_id)
+            incoming = []
+            for linkset in controlled:
+                for link in linkset:
+                    inc_lane = link[0]
+                    if inc_lane not in incoming:
+                        incoming.append(inc_lane)
+            self.lanes = incoming
+        else:
+            # fallback: use first few edges as lanes if no TLS present
+            try:
+                edges = traci.edge.getIDList()
+                self.lanes = [e + "_0" for e in edges[:4]]
+            except Exception:
+                self.lanes = []
+
+        # build observation/action spaces according to detected lanes
+        n_lanes = max(4, len(self.lanes))
+        obs_len = n_lanes + n_lanes + 2  # queues + waits + (phase, elapsed)
+        self.observation_space = gym.spaces.Box(low=0, high=1e9, shape=(obs_len,), dtype=np.float32)
+
+        if self.tls_id:
+            try:
+                nph = traci.trafficlight.getPhaseNumber(self.tls_id)
+                self.action_space = gym.spaces.Discrete(max(2, nph))
+            except Exception:
+                self.action_space = gym.spaces.Discrete(2)
+        else:
+            self.action_space = gym.spaces.Discrete(2)
+
+        # initialize internal phase tracking
+        try:
+            self._current_phase = traci.trafficlight.getPhase(self.tls_id) if self.tls_id else 0
+        except Exception:
+            self._current_phase = 0
+        self._phase_elapsed = 0
+
+        obs = self._get_obs()
+        # **SB3's DummyVecEnv expects env.reset() to return only obs**, so return obs here.
+        # Gymnasium would prefer (obs, info) but SB3 wrapper handles older style; to be safe we return obs.
+        return obs, {}
+
+    def _get_obs(self):
+        queues = []
+        waits = []
+        for i in range(max(4, len(self.lanes))):
+            if i < len(self.lanes):
+                lane = self.lanes[i]
+                try:
+                    q = traci.lane.getLastStepVehicleNumber(lane)
+                    w = traci.lane.getWaitingTime(lane)
+                except Exception:
+                    edge = lane.split("_")[0]
+                    try:
+                        q = traci.edge.getLastStepVehicleNumber(edge)
+                        w = traci.edge.getLastStepHaltingNumber(edge)
+                    except Exception:
+                        q, w = 0, 0
+                queues.append(float(q))
+                waits.append(float(w))
+            else:
+                queues.append(0.0)
+                waits.append(0.0)
+        return np.array(queues + waits + [float(self._current_phase), float(self._phase_elapsed)], dtype=np.float32)
+
+    def step(self, action):
+        # apply action: set phase if TLS known; otherwise noop/toggle
+        if self.tls_id:
+            try:
+                nph = traci.trafficlight.getPhaseNumber(self.tls_id)
+                phase = int(action) % max(1, nph)
+                traci.trafficlight.setPhase(self.tls_id, phase)
+                self._current_phase = phase
+                self._phase_elapsed = 0
+            except Exception:
+                pass
+        else:
+            # no TLS to set
+            pass
+
+        reward = 0.0
+        done = False
+        info = {}
+
+        # advance simulation and compute traffic-pressure-like reward
+        for _ in range(self.action_repeat):
+            traci.simulationStep()
+            try:
+                halts = 0
+                for lane in self.lanes:
+                    try:
+                        halts += traci.lane.getLastStepHaltingNumber(lane)
+                    except Exception:
+                        edge = lane.split("_")[0]
+                        halts += traci.edge.getLastStepHaltingNumber(edge)
+                # negative halting vehicles -> minimize
+                reward -= float(halts)
+            except Exception:
+                pass
+            self._phase_elapsed += self.sim_step
+
+        if traci.simulation.getMinExpectedNumber() == 0:
+            done = True
+
+        obs = self._get_obs()
+        # return according to Gym API used by SB3: (obs, reward, done, info)
+        return obs, reward, done, info
+
+    def render(self, mode="human"):
+        # visualization handled by SUMO-GUI when started with gui=True
+        pass
+
+    def close(self):
+        try:
+            traci.close()
+        except Exception:
+            pass
