@@ -2,8 +2,6 @@
 import os
 import sys
 import shutil
-import random
-import time
 import numpy as np
 import gymnasium as gym
 
@@ -21,241 +19,140 @@ else:
 
 import traci
 
+# simple.net.xml phases: 0 NS green, 1 NS yellow, 2 EW green, 3 EW yellow.
+GREEN_PHASES = (0, 2)
+HOLD = 1e6  # phase duration long enough that SUMO never auto-advances the static programme
+N_LANES = 4
+# obs = [vehicles per approach lane x4, waiting time per lane (s) x4, current green (0/1), seconds in this green]
+OBS_SCALE = np.array([10.0] * N_LANES + [100.0] * N_LANES + [1.0, 60.0], dtype=np.float32)
+METRICS = ("mean_wait", "mean_queue", "max_queue", "throughput")
+
+
 class SumoTrafficEnv(gym.Env):
     """
-    SUMO environment with Traffic-Pressure reward, switching penalty, and min-phase duration.
-    Gymnasium compatible.
+    One signalised 4-way junction in SUMO, Gymnasium API.
+
+    Every `delta_time` seconds the agent picks which approach pair gets green:
+    0 = north-south, 1 = east-west. Switching inserts the yellow phase itself
+    (`yellow_time` s) and is refused until the current green has run `min_green` s.
+
+    Reward per second: minus the traffic pressure (vehicles on each incoming lane
+    minus the mean on its outgoing lanes, floored at 0), minus `switching_penalty`
+    per switch. The episode is truncated at `horizon` seconds of simulated time.
+
+    `info` carries the evaluation metrics for the episode so far (see METRICS).
     """
 
     metadata = {"render_modes": ["human"]}
 
-    def __init__(self, sumo_cfg, gui=False, sim_step=1, action_repeat=5,
-                 min_green=5, switching_penalty=1.0):
+    def __init__(self, sumo_cfg, gui=False, delta_time=5, yellow_time=3, min_green=10,
+                 switching_penalty=1.0, horizon=3600):
         super().__init__()
         self.sumo_cfg = os.path.abspath(sumo_cfg)
-        self.gui = gui
-        self.sim_step = sim_step
-        self.action_repeat = action_repeat
+        self.sumo_binary = "sumo-gui" if gui else "sumo"
+        self.delta_time = delta_time
+        self.yellow_time = yellow_time
         self.min_green = min_green
         self.switching_penalty = switching_penalty
-
-        self.sumo_binary = "sumo-gui" if gui else "sumo"
-        self.tls_id = None
-        self.lanes = []
-        self.in_to_out = {}    # mapping incoming lane -> list of outgoing lanes
-        self._phase_elapsed = 0
-        self._current_phase = 0
-        self._last_action = None
-        self._last_seed = None
-
-        # placeholders - set in reset()
-        self.observation_space = gym.spaces.Box(low=0, high=1e9, shape=(10,), dtype=np.float32)
+        self.horizon = horizon
         self.action_space = gym.spaces.Discrete(2)
+        self.observation_space = gym.spaces.Box(0, np.inf, shape=(2 * N_LANES + 2,), dtype=np.float32)
+        self.tls_id = None
 
     def _find_sumo_executable(self):
         if shutil.which(self.sumo_binary):
             return self.sumo_binary
-        candidates = [
-            r"C:\Program Files (x86)\Eclipse\Sumo\bin\sumo.exe",
-            r"C:\Program Files (x86)\Eclipse\Sumo\bin\sumo-gui.exe",
-            r"C:\Program Files\Sumo\bin\sumo.exe",
-            r"C:\Program Files\Sumo\bin\sumo-gui.exe",
-        ]
-        for c in candidates:
-            if os.path.exists(c):
-                return c
+        for root in (r"C:\Program Files (x86)\Eclipse\Sumo", r"C:\Program Files\Sumo"):
+            exe = os.path.join(root, "bin", self.sumo_binary + ".exe")
+            if os.path.exists(exe):
+                return exe
         return self.sumo_binary
 
-    def _build_cmd(self, seed=None):
-        exe = self._find_sumo_executable()
-        cmd = [exe, "-c", self.sumo_cfg, "--step-length", str(self.sim_step), "--no-warnings", "true"]
-        if seed is not None:
-            cmd += ["--seed", str(int(seed))]
-        return cmd
-
-    def _start_sumo(self, seed=None):
-        cmd = self._build_cmd(seed=seed)
-        print("Starting SUMO with command:", " ".join(cmd))
-        traci.start(cmd)
-
     def reset(self, *, seed=None, options=None):
-        # seed handling
-        if seed is not None:
-            if isinstance(seed, (list, tuple)):
-                seed = int(seed[0])
-            random.seed(int(seed))
-            np.random.seed(int(seed))
-            self._last_seed = int(seed)
-        else:
-            self._last_seed = None
+        super().reset(seed=seed)
+        # explicit seed -> reproducible run; otherwise draw one so training episodes differ
+        sumo_seed = seed if seed is not None else int(self.np_random.integers(1000, 2**31 - 1))
+        self.close()
+        traci.start([self._find_sumo_executable(), "-c", self.sumo_cfg, "--seed", str(sumo_seed),
+                     "--no-warnings", "true", "--no-step-log", "true", "--verbose", "false",
+                     "--time-to-teleport", "-1"]  # no teleports: every stopped second counts
+                    + (["--start", "--quit-on-end"] if self.sumo_binary == "sumo-gui" else []))
 
-        # close previous connection
-        try:
-            traci.close()
-        except Exception:
-            pass
+        self.tls_id = traci.trafficlight.getIDList()[0]
+        links = [link for linkset in traci.trafficlight.getControlledLinks(self.tls_id) for link in linkset]
+        self.lanes = list(dict.fromkeys(inc for inc, _, _ in links))
+        assert len(self.lanes) == N_LANES, f"expected {N_LANES} approach lanes, got {self.lanes}"
+        self.in_to_out = {lane: [out for inc, out, _ in links if inc == lane] for lane in self.lanes}
+        self.all_lanes = list(dict.fromkeys(self.lanes + [out for _, out, _ in links]))
+        self.dt = traci.simulation.getDeltaT()
 
-        # start SUMO
-        self._start_sumo(seed=self._last_seed)
+        self.green, self.elapsed = 0, 0.0
+        self._set_phase(GREEN_PHASES[0])
+        self.queue_sum = self.queue_max = self.seconds = self.departed = self.arrived = self.switches = 0
+        return self._get_obs(), self._info()
 
-        # warmup
-        for _ in range(5):
-            traci.simulationStep()
+    def _set_phase(self, phase):
+        traci.trafficlight.setPhase(self.tls_id, phase)
+        traci.trafficlight.setPhaseDuration(self.tls_id, HOLD)
 
-        # detect TLS and controlled links
-        tls = traci.trafficlight.getIDList()
-        self.tls_id = tls[0] if tls else None
+    def _sim_step(self):
+        """Advance one simulation step, update episode metrics, return the pressure reward."""
+        traci.simulationStep()
+        halted = sum(traci.lane.getLastStepHaltingNumber(l) for l in self.lanes)
+        self.queue_sum += halted
+        self.queue_max = max(self.queue_max, halted)
+        self.seconds += 1
+        self.departed += traci.simulation.getDepartedNumber()
+        self.arrived += traci.simulation.getArrivedNumber()
 
-        if self.tls_id:
-            controlled = traci.trafficlight.getControlledLinks(self.tls_id)
-            incoming = []
-            # build incoming list and mapping to outgoing lanes
-            mapping = {}
-            for linkset in controlled:
-                for link in linkset:
-                    inc_lane = link[0]
-                    out_lane = link[1]
-                    incoming.append(inc_lane)
-                    mapping.setdefault(inc_lane, []).append(out_lane)
-            # unique incoming lanes
-            incoming_unique = []
-            for l in incoming:
-                if l not in incoming_unique:
-                    incoming_unique.append(l)
-            self.lanes = incoming_unique
-            self.in_to_out = mapping
-        else:
-            # fallback to first edges
-            try:
-                edges = traci.edge.getIDList()
-                self.lanes = [e + "_0" for e in edges[:4]]
-                # fallback mapping: same edge -> no outgoing
-                self.in_to_out = {ln: [] for ln in self.lanes}
-            except Exception:
-                self.lanes = []
-                self.in_to_out = {}
+        count = {l: traci.lane.getLastStepVehicleNumber(l) for l in self.all_lanes}
+        pressure = sum(max(count[i] - np.mean([count[o] for o in self.in_to_out[i]]), 0.0) for i in self.lanes)
+        return -float(pressure)
 
-        # define obs/action spaces
-        n_lanes = max(4, len(self.lanes))
-        obs_len = n_lanes + n_lanes + 2  # queues + waits + phase + elapsed
-        self.observation_space = gym.spaces.Box(low=0, high=1e9, shape=(obs_len,), dtype=np.float32)
-
-        if self.tls_id:
-            try:
-                nph = traci.trafficlight.getPhaseNumber(self.tls_id)
-                self.action_space = gym.spaces.Discrete(max(2, nph))
-            except Exception:
-                self.action_space = gym.spaces.Discrete(2)
-        else:
-            self.action_space = gym.spaces.Discrete(2)
-
-        # init internal trackers
-        try:
-            self._current_phase = traci.trafficlight.getPhase(self.tls_id) if self.tls_id else 0
-        except Exception:
-            self._current_phase = 0
-        self._phase_elapsed = 0
-        self._last_action = self._current_phase
-
-        obs = self._get_obs()
-        # Gymnasium-compatible reset returns (obs, info)
-        return obs, {}
-
-    def _get_lane_queue_and_wait(self, lane):
-        try:
-            q = traci.lane.getLastStepVehicleNumber(lane)
-            w = traci.lane.getWaitingTime(lane)
-        except Exception:
-            # fallback to edge
-            edge = lane.split("_")[0]
-            try:
-                q = traci.edge.getLastStepVehicleNumber(edge)
-                w = traci.edge.getLastStepHaltingNumber(edge)
-            except Exception:
-                q, w = 0, 0
-        return float(q), float(w)
+    def _run(self, seconds):
+        reward = 0.0
+        for _ in range(int(round(seconds / self.dt))):
+            if traci.simulation.getTime() >= self.horizon:
+                break
+            reward += self._sim_step()
+        return reward
 
     def _get_obs(self):
-        queues = []
-        waits = []
-        for i in range(max(4, len(self.lanes))):
-            if i < len(self.lanes):
-                lane = self.lanes[i]
-                q, w = self._get_lane_queue_and_wait(lane)
-                queues.append(q)
-                waits.append(w)
-            else:
-                queues.append(0.0)
-                waits.append(0.0)
-        return np.array(queues + waits + [float(self._current_phase), float(self._phase_elapsed)], dtype=np.float32)
+        queues = [traci.lane.getLastStepVehicleNumber(l) for l in self.lanes]
+        waits = [traci.lane.getWaitingTime(l) for l in self.lanes]
+        raw = np.array(queues + waits + [self.green, self.elapsed], dtype=np.float32)
+        return raw / OBS_SCALE
 
-    def _compute_pressure_reward(self):
-        # pressure = incoming_queue - outgoing_queue
-        total = 0.0
-        for inc in self.lanes:
-            inc_q, _ = self._get_lane_queue_and_wait(inc)
-            out_q = 0.0
-            outs = self.in_to_out.get(inc, [])
-            if outs:
-                for out in outs:
-                    oq, _ = self._get_lane_queue_and_wait(out)
-                    out_q += oq
-                out_q = out_q / len(outs)
-            # pressure per approach
-            pressure = max(inc_q - out_q, 0.0)
-            total += pressure
-        # return negative pressure (we minimize)
-        return -float(total)
+    def _info(self):
+        return {
+            # seconds stopped (speed < 0.1 m/s) on the approaches, per vehicle that entered
+            "mean_wait": self.queue_sum * self.dt / max(1, self.departed),
+            "mean_queue": self.queue_sum / max(1, self.seconds),  # halted vehicles on approaches
+            "max_queue": self.queue_max,
+            "throughput": self.arrived,  # vehicles that finished their trip
+            "departed": self.departed,
+            "switches": self.switches,
+        }
 
     def step(self, action):
-        # action handling: enforce min green
-        # if action is not allowed due to min_green, ignore change
-        intended_action = int(action)
-        changed = (intended_action != self._current_phase)
-
-        if changed and self._phase_elapsed < self.min_green:
-            # ignore switch, keep current
-            intended_action = self._current_phase
-            changed = False
-
-        # apply if TLS exists
-        if self.tls_id:
-            try:
-                traci.trafficlight.setPhase(self.tls_id, intended_action)
-                self._current_phase = intended_action
-                if changed:
-                    self._phase_elapsed = 0
-            except Exception:
-                pass
-
+        want = int(action)
         reward = 0.0
-        done = False
-        info = {}
+        if want != self.green and self.elapsed >= self.min_green:
+            self._set_phase(GREEN_PHASES[self.green] + 1)  # yellow for the current green
+            reward += self._run(self.yellow_time)
+            self.green, self.elapsed = want, 0.0
+            self._set_phase(GREEN_PHASES[want])
+            reward -= self.switching_penalty
+            self.switches += 1
+        reward += self._run(self.delta_time)
+        self.elapsed += self.delta_time
 
-        # advance simulation
-        for _ in range(self.action_repeat):
-            traci.simulationStep()
-            # accumulate pressure reward
-            reward += self._compute_pressure_reward()
-            self._phase_elapsed += self.sim_step
-
-        # switching penalty
-        if self._last_action is not None and intended_action != self._last_action:
-            reward -= float(self.switching_penalty)
-        self._last_action = intended_action
-
-        # termination check
-        if traci.simulation.getMinExpectedNumber() == 0:
-            done = True
-
-        obs = self._get_obs()
-        # return Gymnasium-style (obs, reward, terminated, truncated, info)
-        terminated = bool(done)
-        truncated = False
-        return obs, float(reward), terminated, truncated, info
+        truncated = traci.simulation.getTime() >= self.horizon
+        terminated = not truncated and traci.simulation.getMinExpectedNumber() == 0
+        return self._get_obs(), reward, terminated, truncated, self._info()
 
     def render(self, mode="human"):
-        pass
+        pass  # run with gui=True to watch in sumo-gui
 
     def close(self):
         try:

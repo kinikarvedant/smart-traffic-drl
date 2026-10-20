@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Same routes and mean demand as simple.rou.xml (200 veh/h per approach), but random arrivals:
+     each second a vehicle is inserted with probability 200/3600. Used only for evaluation. -->
+<routes>
+  <vType id="car" accel="2.6" decel="4.5" sigma="0.5" length="5" maxSpeed="13.9"/>
+  <flow id="flowN" from="e1" to="e1r" begin="0" end="3600" probability="0.05556"/>
+  <flow id="flowE" from="e2" to="e2r" begin="0" end="3600" probability="0.05556"/>
+  <flow id="flowS" from="e3" to="e3r" begin="0" end="3600" probability="0.05556"/>
+  <flow id="flowW" from="e4" to="e4r" begin="0" end="3600" probability="0.05556"/>
+</routes>

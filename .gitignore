@@ -10,17 +10,18 @@ venv/
 # Logs
 *.log
 
-# TensorBoard
+# TensorBoard: the first (pre-fix) run stays local; for v2 only monitor.csv is tracked
 results/ppo_logs/*
+results/ppo_v2_logs/events.out.tfevents.*
 
 # SUMO junk
 *.dump
 *.output
 
-# Models
+# Models: only the current trained policy is tracked (~150 KB)
 *.zip
+!results/ppo_traffic_v2.zip
 
 # Windows
 Thumbs.db
 desktop.ini
-"@ -Encoding UTF8

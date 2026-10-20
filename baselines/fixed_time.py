@@ -1,41 +1,18 @@
-# baselines/fixed_time_eval.py
-import os, csv
-import traci
+# baselines/fixed_time.py
+from envs.sumo_env import OBS_SCALE
 
-CFG = os.path.join("sumo_scenario", "simple.sumocfg")
-OUT_CSV = os.path.join("results", "baseline_metrics.csv")
 
-def run_fixed(green_time=10):
-    traci.start(["sumo-gui", "-c", CFG])
-    tls = traci.trafficlight.getIDList()
-    tl = tls[0] if tls else None
-    step = 0
-    total_wait = 0.0
-    vehicles = set()
-    while traci.simulation.getMinExpectedNumber() > 0 and step < 3600:
-        phase = (step // green_time) % 2
-        if tl:
-            traci.trafficlight.setPhase(tl, phase)
-        traci.simulationStep()
-        for vid in traci.vehicle.getIDList():
-            total_wait += traci.vehicle.getWaitingTime(vid)
-            vehicles.add(vid)
-        step += 1
-    traci.close()
-    avg_wait = total_wait / max(1, len(vehicles))
-    return {"avg_wait": avg_wait, "vehicles": len(vehicles)}
+class FixedTimePolicy:
+    """
+    Fixed-time signal plan run through the same env as PPO: each direction gets
+    `green` seconds of green, then the env's yellow (3 s), then the other direction.
+    green=30 gives a 66 s cycle. Same predict() signature as an SB3 model.
+    """
 
-def main():
-    results = []
-    for g in [5,10,15]:
-        res = run_fixed(g)
-        print("green", g, "->", res)
-        results.append({"green": g, **res})
-    with open(OUT_CSV, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["green","avg_wait","vehicles"])
-        writer.writeheader()
-        writer.writerows(results)
-    print("Saved baseline metrics to", OUT_CSV)
+    def __init__(self, green=30):
+        self.green = green
 
-if __name__ == "__main__":
-    main()
+    def predict(self, obs, deterministic=True):
+        current = int(round(float(obs[-2] * OBS_SCALE[-2])))
+        elapsed = round(float(obs[-1] * OBS_SCALE[-1]))
+        return (1 - current if elapsed >= self.green else current), None
