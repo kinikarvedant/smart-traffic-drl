@@ -1,0 +1,422 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='50' fill='%23111'/><text x='50' y='64' font-size='42' text-anchor='middle' fill='%23f5c518' font-family='Arial'>VK</text></svg>" />
+<title>Smart traffic signals replay | Vedant Kinikar</title>
+<meta name="description" content="Replay of recorded SUMO runs: a PPO agent and the best fixed-time plan controlling the same simulated junction, on regular and random arrivals.">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Smart traffic signals: replay of PPO vs a fixed-time plan">
+<meta property="og:description" content="Recorded SUMO runs you can replay: PPO wins on the traffic it trained on and loses on random arrivals.">
+<meta property="og:url" content="https://vedantkinikar.duckdns.org/projects/smart-traffic-drl/demo/">
+<link rel="canonical" href="https://vedantkinikar.duckdns.org/projects/smart-traffic-drl/demo/">
+<meta name="theme-color" content="#ffffff">
+<script>
+  (function () {
+    // Relative URLs (runs/, ../) need the page to sit at a path ending in "/".
+    var p = location.pathname;
+    if (location.protocol.indexOf('http') === 0 && !/\/$|\.html?$/.test(p)) location.replace(p + '/' + location.search + location.hash);
+  })();
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Caveat:wght@500;600&family=Inter+Tight:wght@400;500;600&display=swap">
+<style>
+  :root {
+    --bg: #ffffff; --ink: #111111; --body: #5f5f5f; --muted: #8a8a8a;
+    --card: #f2f2f2; --card-hover: #ebebeb; --line: #e4e4e4;
+    --yellow: #f5c518; --tint: #5ee08a;
+    --radius: 28px; --max: 1080px; --ease: cubic-bezier(.2, .7, .2, 1);
+    --sans: "Inter Tight", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --hand: "Caveat", "Segoe Print", cursive;
+    --good: #2b8a3e; --bad: #b54a33;
+    color-scheme: light;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 400 17px/1.6 var(--sans); -webkit-font-smoothing: antialiased; }
+  body::before {
+    content: ""; position: absolute; z-index: -1; top: 0; left: 0; right: 0; height: 640px; pointer-events: none;
+    background:
+      radial-gradient(34% 55% at 66% 0%, rgba(255, 216, 77, .5), rgba(255, 216, 77, 0) 100%),
+      radial-gradient(60% 100% at 42% 0%, rgba(94, 224, 138, .4), rgba(94, 224, 138, 0) 100%);
+  }
+  h1, h2 { margin: 0 0 .5em; font-weight: 500; letter-spacing: -.03em; line-height: 1.05; }
+  h1 { font-size: clamp(2.2rem, 5.6vw, 4.2rem); letter-spacing: -.05em; margin: 12px 0 22px; max-width: 19ch; }
+  h2 { font-size: clamp(1.5rem, 3vw, 2rem); letter-spacing: -.035em; line-height: 1.1; margin-bottom: 14px; }
+  p { margin: 0 0 1em; }
+  b, strong { font-weight: 600; }
+  a { color: var(--ink); text-underline-offset: 3px; }
+  code { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: .9em; }
+  :focus-visible { outline: 3px solid var(--ink); outline-offset: 3px; border-radius: 8px; }
+  .wrap { max-width: var(--max); margin: 0 auto; padding: 0 20px; }
+  .skip { position: absolute; left: -9999px; }
+  .skip:focus { left: 16px; top: 64px; z-index: 100; background: var(--ink); color: #fff; padding: 10px 16px; border-radius: 999px; }
+
+  .nav { position: fixed; top: 14px; left: 50%; transform: translateX(-50%); z-index: 50; }
+  .nav ul { display: flex; align-items: center; gap: 2px; margin: 0; padding: 4px; list-style: none; background: #111; border-radius: 999px; box-shadow: 0 8px 30px -10px rgba(0, 0, 0, .45); }
+  .nav a { position: relative; z-index: 1; display: block; padding: 6px 13px; border-radius: 999px; color: #bdbdbd; text-decoration: none; font-size: .9rem; font-weight: 500; white-space: nowrap; }
+  .nav a:hover { color: #fff; }
+  .nav a.on { color: #111; }
+  .nav a.on::before { content: ""; position: absolute; z-index: -1; inset: 0; border-radius: 999px; background: var(--yellow); }
+  .nav .mark { display: grid; place-items: center; width: 30px; height: 30px; padding: 0; margin-right: 2px; border-radius: 50%; background: #262626; color: #fff; font-size: .72rem; font-weight: 600; }
+  .nav .mark:hover { background: var(--yellow); color: #111; }
+  .topblur { position: fixed; inset: 0 0 auto; height: 88px; z-index: 40; pointer-events: none; backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); mask-image: linear-gradient(to bottom, #000 30%, transparent); -webkit-mask-image: linear-gradient(to bottom, #000 30%, transparent); background: linear-gradient(to bottom, rgba(255, 255, 255, .55), rgba(255, 255, 255, 0)); }
+
+  header.hero { padding: 120px 0 8px; }
+  .crumbs { font-size: .95rem; margin: 0 0 26px; color: var(--body); }
+  .crumbs a { color: var(--body); text-decoration: none; }
+  .crumbs a:hover { color: var(--ink); }
+  .eyebrow { display: inline-block; font-family: var(--hand); font-weight: 500; font-size: 1.6rem; line-height: 1.1; color: var(--body); transform: rotate(-3deg); transform-origin: left center; }
+  .lede { font-size: clamp(1.1rem, 2.2vw, 1.3rem); line-height: 1.45; letter-spacing: -.01em; max-width: 62ch; }
+  .caveat { border-left: 4px solid var(--yellow); padding: 16px 20px; background: var(--card); border-radius: 0 22px 22px 0; margin: 8px 0 0; max-width: 78ch; }
+
+  section { padding: 48px 0 8px; }
+  .demo { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(280px, 1fr); gap: 16px; align-items: start; }
+  .panel { background: var(--card); border-radius: var(--radius); padding: clamp(16px, 3vw, 24px); min-width: 0; }
+  .stage { position: relative; background: #fff; border-radius: 18px; overflow: hidden; }
+  .stage canvas { display: block; width: 100%; height: auto; aspect-ratio: 1; }
+  .badge { position: absolute; left: 12px; top: 12px; padding: 4px 12px; border-radius: 999px; background: rgba(17, 17, 17, .82); color: #fff; font-size: .8rem; font-weight: 500; }
+  .label { display: block; color: var(--body); font-size: .78rem; font-weight: 600; letter-spacing: .1em; text-transform: uppercase; margin: 0 0 8px; }
+  .seg { display: flex; flex-wrap: wrap; gap: 4px; padding: 4px; margin: 0 0 16px; background: #fff; border-radius: 999px; border: 1px solid var(--line); }
+  .seg button { flex: 1 1 auto; min-height: 38px; padding: 0 14px; border: 0; border-radius: 999px; background: transparent; color: var(--body); font: inherit; font-size: .9rem; font-weight: 500; cursor: pointer; }
+  .seg button[aria-pressed="true"] { background: var(--ink); color: #fff; }
+  .seg button small { display: block; font-size: .72rem; font-weight: 400; opacity: .75; line-height: 1; margin-top: -2px; }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 12px 0 0; }
+  .play { min-height: 42px; min-width: 96px; padding: 0 18px; border: 0; border-radius: 999px; background: var(--ink); color: #fff; font: inherit; font-weight: 500; cursor: pointer; }
+  .play:hover { background: #333; }
+  select { min-height: 42px; padding: 0 14px; font: inherit; font-size: .9rem; color: var(--ink); background: #fff; border: 1px solid var(--line); border-radius: 999px; cursor: pointer; }
+  .scrub { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: center; margin: 12px 0 0; font-variant-numeric: tabular-nums; font-size: .85rem; color: var(--body); }
+  .scrub input { width: 100%; accent-color: var(--ink); }
+  .counters { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .c { background: #fff; border-radius: 16px; padding: 10px 14px; }
+  .c b { display: block; font-size: 1.35rem; font-weight: 500; letter-spacing: -.03em; font-variant-numeric: tabular-nums; line-height: 1.25; }
+  .c span { color: var(--body); font-size: .78rem; line-height: 1.3; display: block; }
+  .c.big { grid-column: 1 / -1; }
+  .c.big b { font-size: 2rem; }
+  .final { margin: 12px 0 0; font-size: .9rem; color: var(--body); min-height: 1.6em; }
+  .final b { color: var(--ink); }
+  .legend { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 10px 0 0; padding: 0; list-style: none; color: var(--body); font-size: .82rem; }
+  .legend li { display: inline-flex; align-items: center; gap: 6px; }
+  .sw { display: inline-block; width: 14px; height: 8px; border-radius: 2px; }
+  .status { font-weight: 600; color: var(--bad); }
+
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: .93rem; font-variant-numeric: tabular-nums; }
+  th, td { padding: 10px; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; white-space: normal; }
+  th { color: var(--body); font-weight: 600; font-size: .8rem; }
+  tbody tr:last-child td { border-bottom: 0; }
+  td.win { font-weight: 600; color: var(--good); }
+  td.lose { font-weight: 600; color: var(--bad); }
+  .note { color: var(--body); font-size: .85rem; margin: 12px 0 0; }
+  .how { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+  .how ul { margin: 0; padding-left: 1.1em; color: var(--body); }
+  .how li { margin-bottom: .45em; }
+  .files { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; list-style: none; margin: 0; padding: 0; }
+  .files a { display: block; height: 100%; padding: 18px 22px; background: var(--card); border-radius: var(--radius); text-decoration: none; color: var(--ink); transition: background .3s var(--ease), transform .3s var(--ease); }
+  .files a:hover { background: var(--card-hover); transform: translateY(-2px); }
+  .files code { font-weight: 600; }
+  .files span { display: block; color: var(--body); font-size: .88rem; margin-top: 4px; }
+  footer { color: var(--body); font-size: .85rem; padding: 48px 0 56px; }
+
+  @media (max-width: 860px) { .demo { grid-template-columns: 1fr; } }
+  @media (max-width: 520px) {
+    body { font-size: 16px; }
+    .nav a { padding: 6px 10px; font-size: .85rem; }
+    th, td { padding: 8px 6px; }
+  }
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; } }
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<div class="topblur" aria-hidden="true"></div>
+<nav class="nav" aria-label="Main">
+  <ul>
+    <li><a class="mark" href="../../../#hey" aria-label="Portfolio home">VK</a></li>
+    <li><a href="../../../#hey">Hey</a></li><li><a href="../../../#work" class="on">Work</a></li><li><a href="../../../#story">Story</a></li><li><a href="../../../#chat">Chat</a></li>
+  </ul>
+</nav>
+<div class="wrap">
+  <main id="main">
+    <header class="hero">
+      <p class="crumbs"><a href="../../../#work">&larr; All projects</a> &middot; <a href="../">Smart traffic write-up</a></p>
+      <div class="eyebrow">Live demo &middot; replay of simulated runs</div>
+      <h1>Watch a PPO agent and a fixed-time plan run the same junction</h1>
+      <p class="lede">Each run is one simulated hour at a four-way junction in SUMO, recorded second by second. Switch the controller and the traffic pattern and the clock stays put, so you can compare the same moment.</p>
+      <p class="caveat"><b>This is a replay, not live traffic or a model running now.</b> The runs were recorded from SUMO 1.25 with the trained PPO policy and with the best fixed-time plan tested (10 s greens), on evaluation seeds 1 to 5. The counters are recomputed from the recording, and every run's final numbers match <code>results/eval_episodes.csv</code>.</p>
+      <noscript><p class="status">The replay needs JavaScript. The results are in the <a href="https://github.com/kinikarvedant/smart-traffic-drl#results">README</a>.</p></noscript>
+    </header>
+
+    <section aria-label="Replay">
+      <div class="demo">
+        <div class="panel">
+          <div class="stage">
+            <canvas id="view" width="640" height="640" role="img" aria-label="Top-down view of the junction with vehicles and signal colours"></canvas>
+            <span class="badge" id="badge">Loading&hellip;</span>
+          </div>
+          <ul class="legend">
+            <li><span class="sw" style="background:#2f2f2f"></span>moving</li>
+            <li><span class="sw" style="background:#e8590c"></span>stopped (speed under 0.1 m/s)</li>
+            <li><span class="sw" style="background:#2f9e44"></span><span class="sw" style="background:#f5c518"></span><span class="sw" style="background:#e03131"></span>signal at each stop line</li>
+          </ul>
+          <div class="row">
+            <button type="button" class="play" id="play">Play</button>
+            <label for="speed" class="sr-label" hidden>Speed</label>
+            <select id="speed" aria-label="Playback speed">
+              <option value="1">1&times; real time</option>
+              <option value="5">5&times;</option>
+              <option value="20" selected>20&times;</option>
+              <option value="60">60&times;</option>
+            </select>
+            <select id="seed" aria-label="Simulation seed">
+              <option value="1">Seed 1</option><option value="2">Seed 2</option><option value="3">Seed 3</option><option value="4">Seed 4</option><option value="5">Seed 5</option>
+            </select>
+          </div>
+          <div class="scrub"><span id="t-now">0:00</span><input type="range" id="time" min="0" max="3600" step="1" value="0" aria-label="Simulated time"><span>60:00</span></div>
+        </div>
+        <div class="panel">
+          <span class="label" id="ctrl-l">Controller</span>
+          <div class="seg" role="group" aria-labelledby="ctrl-l" id="ctrl">
+            <button type="button" data-v="ppo" aria-pressed="true">PPO agent</button>
+            <button type="button" data-v="fixed10" aria-pressed="false">Fixed-time 10 s</button>
+          </div>
+          <span class="label" id="dem-l">Traffic pattern</span>
+          <div class="seg" role="group" aria-labelledby="dem-l" id="demand">
+            <button type="button" data-v="regular" aria-pressed="true">Regular arrivals<small>trained on</small></button>
+            <button type="button" data-v="random" aria-pressed="false">Random arrivals<small>never seen</small></button>
+          </div>
+          <div class="counters" aria-live="off">
+            <div class="c big"><b id="k-wait">&ndash;</b><span>mean wait per vehicle so far (s): stopped seconds &divide; vehicles entered</span></div>
+            <div class="c"><b id="k-clock">&ndash;</b><span>simulated time</span></div>
+            <div class="c"><b id="k-phase">&ndash;</b><span>signal</span></div>
+            <div class="c"><b id="k-stop">&ndash;</b><span>stopped now</span></div>
+            <div class="c"><b id="k-cum">&ndash;</b><span>stopped seconds, total</span></div>
+            <div class="c"><b id="k-in">&ndash;</b><span>vehicles entered</span></div>
+            <div class="c"><b id="k-out">&ndash;</b><span>vehicles finished</span></div>
+            <div class="c"><b id="k-sw">&ndash;</b><span>green switches</span></div>
+            <div class="c"><b id="k-max">&ndash;</b><span>longest queue so far</span></div>
+          </div>
+          <p class="final" id="final" aria-live="polite"></p>
+        </div>
+      </div>
+    </section>
+
+    <section aria-labelledby="res-h">
+      <h2 id="res-h">The full-hour results</h2>
+      <div class="panel">
+        <div class="table-wrap"><table id="results"><caption class="label" style="text-align:left">Mean wait per vehicle (s), mean of seeds 1 to 5</caption><thead><tr><th>Traffic pattern</th><th>PPO agent</th><th>Fixed-time 10 s</th><th>Better</th></tr></thead><tbody><tr><td colspan="4">Loading&hellip;</td></tr></tbody></table></div>
+        <p class="note">Computed in your browser from the recorded runs; <code>demo/record.py</code> checks they equal <code>results/eval_summary.csv</code>. The full table, with the 30 s and 42 s plans, is in the write-up.</p>
+      </div>
+    </section>
+
+    <section aria-labelledby="how-h">
+      <h2 id="how-h">What you're watching</h2>
+      <div class="how">
+        <div class="panel">
+          <ul>
+            <li>One junction, one lane per approach, all traffic straight through: 200 vehicles an hour from each side.</li>
+            <li>Every 5 s the PPO agent picks which direction gets green. A switch runs a 3 s yellow first and is refused until the green has lasted 10 s.</li>
+            <li>The fixed-time plan gives each direction 10 s of green, then the same 3 s yellow.</li>
+          </ul>
+        </div>
+        <div class="panel">
+          <ul>
+            <li>On regular arrivals (one car every 18 s per side, the pattern it trained on) PPO switched 199 times on every seed: it learned the rhythm of that demand.</li>
+            <li>On random arrivals at the same average rate it reacts to the queues, but the simple 10 s plan waits less. The edge didn't carry over.</li>
+            <li>The view shows the 120 m around the junction; each approach is 243 m long.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section aria-labelledby="files-h">
+      <h2 id="files-h">Source</h2>
+      <ul class="files">
+        <li><a href="https://github.com/kinikarvedant/smart-traffic-drl#readme"><code>README.md</code><span>Full write-up, all four controllers, caveats</span></a></li>
+        <li><a href="https://github.com/kinikarvedant/smart-traffic-drl/blob/main/demo/record.py"><code>demo/record.py</code><span>Records these runs and checks them against the CSVs</span></a></li>
+        <li><a href="https://github.com/kinikarvedant/smart-traffic-drl/blob/main/envs/sumo_env.py"><code>envs/sumo_env.py</code><span>The environment: state, actions, yellow logic, metrics</span></a></li>
+        <li><a href="https://github.com/kinikarvedant/smart-traffic-drl/blob/main/results/eval_episodes.csv"><code>results/eval_episodes.csv</code><span>Per-seed results the replay reproduces</span></a></li>
+      </ul>
+    </section>
+  </main>
+
+  <footer>
+    <p>Simulation: Eclipse SUMO 1.25. Agent: PPO from Stable-Baselines3.</p>
+    <p>Built by Vedant Kinikar, Master of Data Science, RMIT University. <a href="../../../">Back to portfolio</a></p>
+  </footer>
+</div>
+
+<script>
+(function () {
+  'use strict';
+  var $ = function (s) { return document.querySelector(s); };
+  var B36 = '0123456789abcdefghijklmnopqrstuvwxyz';
+  var NAMES = { ppo: 'PPO agent', fixed10: 'Fixed-time 10 s', regular: 'Regular arrivals', random: 'Random arrivals' };
+  // Network geometry from sumo_scenario/simple.net.xml (metres, y up). Routes: 0 N->S, 1 E->W, 2 S->N, 3 W->E.
+  var LANE = [248.4, 251.6, 251.6, 248.4], STOP = [257.2, 257.2, 242.8, 242.8], C = 250, VIEW = 60, CAR = 5, W = 2;
+  var state = { ctrl: 'ppo', demand: 'regular', seed: 1, t: 0, playing: false, speed: 20 };
+  var cache = {}, run = null, index = null, last = 0, raf = 0;
+
+  var cv = $('#view'), g = cv.getContext('2d');
+  var dpr = Math.min(2, window.devicePixelRatio || 1);
+  cv.width = cv.height = 640 * dpr;
+  var S = 640 * dpr / (2 * VIEW);
+  function px(x) { return (x - (C - VIEW)) * S; }
+  function py(y) { return ((C + VIEW) - y) * S; }
+
+  function fmt(sec) { sec = Math.floor(sec); return Math.floor(sec / 60) + ':' + ('0' + sec % 60).slice(-2); }
+
+  // Decode a recorded run and precompute the running totals the counters show.
+  function prepare(d) {
+    var n = d.seconds, dec = function (s) { var a = new Uint8Array(n); for (var i = 0; i < n; i++) a[i] = B36.indexOf(s[i]); return a; };
+    var phase = dec(d.phase), halted = dec(d.halted), dep = dec(d.departed), arr = dec(d.arrived);
+    var cumH = new Float64Array(n), cumD = new Float64Array(n), cumA = new Float64Array(n), sw = new Uint16Array(n), mx = new Uint8Array(n);
+    for (var i = 0; i < n; i++) {
+      cumH[i] = (i ? cumH[i - 1] : 0) + halted[i];
+      cumD[i] = (i ? cumD[i - 1] : 0) + dep[i];
+      cumA[i] = (i ? cumA[i - 1] : 0) + arr[i];
+      sw[i] = (i ? sw[i - 1] : 0) + (phase[i] % 2 === 1 && (i === 0 || phase[i - 1] % 2 === 0) ? 1 : 0);  // a yellow starts each switch
+      mx[i] = Math.max(i ? mx[i - 1] : 0, halted[i]);
+    }
+    return { n: n, phase: phase, halted: halted, cumH: cumH, cumD: cumD, cumA: cumA, sw: sw, mx: mx, veh: d.vehicles };
+  }
+
+  function key() { return state.demand + '-' + state.ctrl + '-' + state.seed; }
+
+  function select() {
+    var k = key();
+    $('#badge').textContent = 'Replay · ' + NAMES[state.ctrl] + ' · ' + NAMES[state.demand].toLowerCase() + ' · seed ' + state.seed;
+    if (cache[k]) { run = cache[k]; frame(); return; }
+    $('#badge').textContent = 'Loading run…';
+    fetch('runs/' + k + '.json').then(function (r) {
+      if (!r.ok) throw new Error('runs/' + k + '.json returned HTTP ' + r.status);
+      return r.json();
+    }).then(function (d) {
+      cache[k] = prepare(d);
+      if (key() === k) { run = cache[k]; select(); }
+    }).catch(function (e) { $('#badge').textContent = 'Could not load this run: ' + e.message; });
+  }
+
+  function signal(dirNS, p) {  // phases: 0 NS green, 1 NS yellow, 2 EW green, 3 EW yellow
+    var mine = dirNS ? p < 2 : p >= 2;
+    return !mine ? '#e03131' : (p % 2 ? '#f5c518' : '#2f9e44');
+  }
+
+  function draw(i, frac) {
+    var full = 640 * dpr;
+    g.fillStyle = '#e6eadf'; g.fillRect(0, 0, full, full);
+    g.fillStyle = '#3d3d3d';
+    g.fillRect(px(246.8), 0, 6.4 * S, full);
+    g.fillRect(0, py(253.2), full, 6.4 * S);
+    g.strokeStyle = 'rgba(255,255,255,.7)'; g.lineWidth = Math.max(1, .25 * S); g.setLineDash([3 * S, 3 * S]);
+    g.beginPath();
+    g.moveTo(px(250), 0); g.lineTo(px(250), py(257.2)); g.moveTo(px(250), py(242.8)); g.lineTo(px(250), full);
+    g.moveTo(0, py(250)); g.lineTo(px(242.8), py(250)); g.moveTo(px(257.2), py(250)); g.lineTo(full, py(250));
+    g.stroke(); g.setLineDash([]);
+    g.fillStyle = '#4a4a4a'; g.fillRect(px(246.8), py(253.2), 6.4 * S, 6.4 * S);
+    if (!run) return;
+    var p = run.phase[i];
+    // signal bars across each approach lane, at its stop line
+    var bars = [[px(246.8), py(257.2) - .9 * S, 3.2 * S, .9 * S, true], [px(253.2) + 0, py(253.2), .9 * S, 3.2 * S, false],
+                [px(250), py(242.8), 3.2 * S, .9 * S, true], [px(246.8) - .9 * S, py(250), .9 * S, 3.2 * S, false]];
+    bars.forEach(function (b) { g.fillStyle = signal(b[4], p); g.fillRect(b[0], b[1], b[2], b[3]); });
+    for (var k = 0; k < run.veh.length; k++) {
+      var v = run.veh[k], r = v[0], j = i - v[1], pos = v[2];
+      if (j < 0 || j >= pos.length) continue;
+      var s = j + 1 < pos.length ? pos[j] + (pos[j + 1] - pos[j]) * frac : pos[j];
+      var stopped = j > 0 && pos[j] === pos[j - 1];
+      if (Math.abs(s - C) > VIEW + CAR) continue;
+      g.fillStyle = stopped ? '#e8590c' : '#2f2f2f';
+      var lane = LANE[r];
+      if (r === 0) g.fillRect(px(lane - W / 2), py(s + CAR), W * S, CAR * S);        // heading south, front at s
+      else if (r === 2) g.fillRect(px(lane - W / 2), py(s), W * S, CAR * S);         // heading north
+      else if (r === 1) g.fillRect(px(s), py(lane + W / 2), CAR * S, W * S);          // heading west
+      else g.fillRect(px(s - CAR), py(lane + W / 2), CAR * S, W * S);                 // heading east
+    }
+  }
+
+  function counters(i) {
+    var dep = run.cumD[i];
+    $('#k-wait').textContent = dep ? (run.cumH[i] / dep).toFixed(2) + ' s' : '–';
+    $('#k-clock').textContent = fmt(i + 1);
+    var p = run.phase[i];
+    $('#k-phase').textContent = (p < 2 ? 'N–S ' : 'E–W ') + (p % 2 ? 'yellow' : 'green');
+    $('#k-stop').textContent = run.halted[i];
+    $('#k-cum').textContent = run.cumH[i].toLocaleString('en-AU');
+    $('#k-in').textContent = dep;
+    $('#k-out').textContent = run.cumA[i];
+    $('#k-sw').textContent = run.sw[i];
+    $('#k-max').textContent = run.mx[i];
+    $('#t-now').textContent = fmt(i + 1);
+    $('#time').value = i + 1;
+    var end = i === run.n - 1;
+    $('#final').innerHTML = end ? 'End of the hour: <b>' + (run.cumH[i] / dep).toFixed(2) + ' s</b> mean wait, the same as this run\'s row in <code>eval_episodes.csv</code>.' : '';
+  }
+
+  function frame() {
+    if (!run) { draw(0, 0); return; }
+    var t = Math.min(state.t, run.n - 1e-6), i = Math.min(Math.floor(t), run.n - 1);
+    draw(i, t - Math.floor(t)); counters(i);
+  }
+
+  function tick(now) {
+    var dt = Math.min(.1, (now - last) / 1000); last = now;
+    if (state.playing && run) {
+      state.t += dt * state.speed;
+      if (state.t >= run.n) { state.t = run.n; setPlaying(false); }
+    }
+    frame();
+    raf = state.playing ? requestAnimationFrame(tick) : 0;
+  }
+
+  function setPlaying(on) {
+    state.playing = on;
+    $('#play').textContent = on ? 'Pause' : (run && state.t >= run.n ? 'Replay' : 'Play');
+    if (on && !raf) { last = performance.now(); raf = requestAnimationFrame(tick); }
+  }
+
+  function seg(id, prop) {
+    Array.prototype.forEach.call(document.querySelectorAll('#' + id + ' button'), function (b) {
+      b.addEventListener('click', function () {
+        Array.prototype.forEach.call(document.querySelectorAll('#' + id + ' button'), function (o) { o.setAttribute('aria-pressed', o === b ? 'true' : 'false'); });
+        state[prop] = b.dataset.v; select();
+      });
+    });
+  }
+  seg('ctrl', 'ctrl'); seg('demand', 'demand');
+  $('#seed').addEventListener('change', function () { state.seed = +this.value; select(); });
+  $('#speed').addEventListener('change', function () { state.speed = +this.value; });
+  $('#time').addEventListener('input', function () { state.t = Math.max(0, +this.value - 1); if (!state.playing) frame(); });
+  $('#play').addEventListener('click', function () {
+    if (run && state.t >= run.n) state.t = 0;
+    setPlaying(!state.playing);
+    if (!state.playing) frame();
+  });
+
+  fetch('runs/index.json').then(function (r) { return r.json(); }).then(function (d) {
+    index = d.episodes;
+    var mean = function (dem, ctrl) {
+      var xs = index.filter(function (e) { return e.demand === dem && e.controller === ctrl; }).map(function (e) { return e.mean_wait; });
+      return xs.reduce(function (a, b) { return a + b; }, 0) / xs.length;
+    };
+    $('#results tbody').innerHTML = ['regular', 'random'].map(function (dem) {
+      var a = mean(dem, 'PPO'), b = mean(dem, 'Fixed-time 10 s'), ppoWins = a < b;
+      return '<tr><td>' + NAMES[dem] + (dem === 'regular' ? ' (trained on)' : ' (never seen)') + '</td><td class="' + (ppoWins ? 'win' : 'lose') + '">' + a.toFixed(2) +
+        '</td><td class="' + (ppoWins ? '' : 'win') + '">' + b.toFixed(2) + '</td><td>' + (ppoWins ? 'PPO' : 'Fixed-time 10 s') + '</td></tr>';
+    }).join('');
+  }).catch(function () { $('#results tbody').innerHTML = '<tr><td colspan="4" class="status">Could not load runs/index.json.</td></tr>'; });
+
+  select();
+  var calm = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  (function start() {
+    if (!run) { setTimeout(start, 100); return; }
+    frame();
+    if (!calm) setPlaying(true);
+  })();
+})();
+</script>
+</body>
+</html>

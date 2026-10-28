@@ -2,6 +2,8 @@
 
 A PPO agent that decides when to switch a simulated 4-way traffic signal, compared against fixed-time signal plans on the same simulator, seeds and metrics.
 
+**Live demo:** [vedantkinikar.duckdns.org/projects/smart-traffic-drl/demo/](https://vedantkinikar.duckdns.org/projects/smart-traffic-drl/demo/) replays recorded SUMO runs of PPO and the 10 s fixed-time plan, on both demand patterns and seeds 1 to 5, with live counters. It is a replay of simulated runs, not a model running in the browser; every run's final numbers match `results/eval_episodes.csv`.
+
 ![PPO controlling the junction in SUMO](results/figures/ppo_demo.gif)
 
 *90 s of simulation shown at 5x speed, with PPO in control (seed 1, regular demand). The red and green bars at the stop lines are the signals.*
@@ -101,6 +103,7 @@ python -m agents.train            # train PPO (~15 min on CPU) -> results/ppo_tr
 python -m agents.eval             # PPO vs fixed-time, 5 seeds, both demand patterns -> results/eval_*.csv
 python notebooks/plot_results.py  # figures -> results/figures/
 python -m agents.eval --gif       # optional: record the GIF above (opens sumo-gui)
+python demo/record.py             # optional: re-record the browser replay's runs -> demo/runs/, checked against results/eval_*.csv
 ```
 
 Run every command from the repo root. Training logs go to `results/ppo_v2_logs/`, and `tensorboard --logdir results/ppo_v2_logs` shows the training curves. The trained model `results/ppo_traffic_v2.zip` is included, so you can skip training and go straight to evaluation.
@@ -115,6 +118,7 @@ agents/eval.py            evaluation of all controllers over the same seeds; GIF
 notebooks/plot_results.py figures
 sumo_scenario/            network, regular demand (simple.*) and random demand (random.*)
 results/                  trained model, evaluation CSVs, training monitor log, figures
+demo/                     browser replay (index.html) and the recorder that writes its runs (record.py)
 ```
 
 ### Note on the first version
