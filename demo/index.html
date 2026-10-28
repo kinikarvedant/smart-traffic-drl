@@ -389,7 +389,7 @@
   seg('ctrl', 'ctrl'); seg('demand', 'demand');
   $('#seed').addEventListener('change', function () { state.seed = +this.value; select(); });
   $('#speed').addEventListener('change', function () { state.speed = +this.value; });
-  $('#time').addEventListener('input', function () { state.t = Math.max(0, +this.value - 1); if (!state.playing) frame(); });
+  $('#time').addEventListener('input', function () { state.t = Math.max(0, +this.value - 1); frame(); });
   $('#play').addEventListener('click', function () {
     if (run && state.t >= run.n) state.t = 0;
     setPlaying(!state.playing);
